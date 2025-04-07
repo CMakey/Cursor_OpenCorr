@@ -230,63 +230,81 @@ def reconstruct_subset_parallel(tar_subset, tar_gradient_x, tar_gradient_y,
 
 
 @nb.njit(parallel=True)
-def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
+def compute_poi_batch_numba(poi_data_array, ref_img_data, ref_img_width, ref_img_height,
                       tar_img_data, tar_coefficient, tar_coefficient_x, tar_coefficient_y,
                       subset_radius_x, subset_radius_y, conv_criterion, stop_condition):
-    """并行计算POI批次的变形，使用numba加速"""
-    batch_size = len(poi_batch)
+    """并行计算POI批次的变形，使用numba加速和纯NumPy数组
+    
+    参数:
+    poi_data_array: shape=(batch_size, 13)的NumPy数组，每行包含:
+        [x, y, u, ux, uy, v, vx, vy, u0, v0, zncc, iteration, convergence]
+    返回:
+    更新后的poi_data_array
+    """
+    batch_size = poi_data_array.shape[0]
     subset_width = 2 * subset_radius_x + 1
     subset_height = 2 * subset_radius_y + 1
     
     # 并行处理每个POI
     for i in range(batch_size):
-        poi = poi_batch[i]
+        # 提取POI数据
+        x = poi_data_array[i, 0]
+        y = poi_data_array[i, 1]
+        u = poi_data_array[i, 2]
+        ux = poi_data_array[i, 3]
+        uy = poi_data_array[i, 4]
+        v = poi_data_array[i, 5]
+        vx = poi_data_array[i, 6]
+        vy = poi_data_array[i, 7]
+        zncc = poi_data_array[i, 10]
         
         # 检查POI是否有效
-        if (poi.y - subset_radius_y < 0 or poi.x - subset_radius_x < 0 or
-            poi.y + subset_radius_y > ref_img_height - 1 or 
-            poi.x + subset_radius_x > ref_img_width - 1 or
-            abs(poi.deformation.u) >= ref_img_width or 
-            abs(poi.deformation.v) >= ref_img_height or
-            poi.result.zncc < 0 or math.isnan(poi.deformation.u) or 
-            math.isnan(poi.deformation.v)):
+        if (y - subset_radius_y < 0 or x - subset_radius_x < 0 or
+            y + subset_radius_y > ref_img_height - 1 or 
+            x + subset_radius_x > ref_img_width - 1 or
+            abs(u) >= ref_img_width or 
+            abs(v) >= ref_img_height or
+            zncc < 0 or math.isnan(u) or 
+            math.isnan(v)):
             
-            poi.result.zncc = min(poi.result.zncc, -1.0) if poi.result.zncc < 0 else -1.0
+            poi_data_array[i, 10] = min(zncc, -1.0) if zncc < 0 else -1.0
             continue
         
-        # 创建参考子区
+        # 创建参考子区 - 确保使用float32类型
         ref_subset = np.zeros((subset_height, subset_width), dtype=np.float32)
         for r in range(subset_height):
             for c in range(subset_width):
-                y_global = int(poi.y + (r - subset_radius_y))
-                x_global = int(poi.x + (c - subset_radius_x))
+                y_global = int(y + (r - subset_radius_y))
+                x_global = int(x + (c - subset_radius_x))
                 if 0 <= y_global < ref_img_height and 0 <= x_global < ref_img_width:
-                    ref_subset[r, c] = ref_img_data[y_global, x_global]
+                    ref_subset[r, c] = float(ref_img_data[y_global, x_global])
         
         # 计算参考子区的零均值归一化
-        ref_mean = np.mean(ref_subset)
+        ref_mean = np.float32(np.mean(ref_subset))
         ref_subset = ref_subset - ref_mean
-        ref_mean_norm = np.sqrt(np.sum(ref_subset * ref_subset))
+        ref_mean_norm = np.float32(np.sqrt(np.sum(ref_subset * ref_subset)))
         
-        # 创建目标子区
+        # 创建目标子区 - 确保使用float32类型
         tar_subset = np.zeros((subset_height, subset_width), dtype=np.float32)
         tar_gradient_x = np.zeros((subset_height, subset_width), dtype=np.float32)
         tar_gradient_y = np.zeros((subset_height, subset_width), dtype=np.float32)
         
         # 获取初始变形参数
-        p_current = NumbaDeformation2D1(
-            poi.deformation.u, poi.deformation.ux, poi.deformation.uy,
-            poi.deformation.v, poi.deformation.vx, poi.deformation.vy
-        )
+        p_current_u = np.float32(u)
+        p_current_ux = np.float32(ux)
+        p_current_uy = np.float32(uy)
+        p_current_v = np.float32(v)
+        p_current_vx = np.float32(vx)
+        p_current_vy = np.float32(vy)
         
         # 保存初始猜测值
-        u0 = p_current.u
-        v0 = p_current.v
+        u0 = p_current_u
+        v0 = p_current_v
         
         # Newton-Raphson迭代
         iteration_counter = 0
-        dp_norm_max = 0.0
-        znssd = 0.0
+        dp_norm_max = np.float32(0.0)
+        znssd = np.float32(0.0)
         
         while iteration_counter < stop_condition:
             iteration_counter += 1
@@ -294,35 +312,35 @@ def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
             # 重构子区和梯度矩阵
             for r in range(subset_height):
                 for c in range(subset_width):
-                    x_local = c - subset_radius_x
-                    y_local = r - subset_radius_y
+                    x_local = np.float32(c - subset_radius_x)
+                    y_local = np.float32(r - subset_radius_y)
                     
-                    # 计算变形后的坐标
-                    point = NumbaPoint2D(x_local, y_local)
-                    warped = p_current.warp(point)
-                    global_x = poi.x + warped.x
-                    global_y = poi.y + warped.y
+                    # 计算变形后的坐标 (使用线性方程替代warp函数)
+                    warped_x = x_local + p_current_u + p_current_ux * x_local + p_current_uy * y_local
+                    warped_y = y_local + p_current_v + p_current_vx * x_local + p_current_vy * y_local
+                    global_x = x + warped_x
+                    global_y = y + warped_y
                     
                     # 边界检查和插值计算
                     if (global_x < 1 or global_y < 1 or 
                         global_x >= ref_img_width - 2 or global_y >= ref_img_height - 2):
-                        tar_subset[r, c] = 0.0
-                        tar_gradient_x[r, c] = 0.0
-                        tar_gradient_y[r, c] = 0.0
+                        tar_subset[r, c] = np.float32(0.0)
+                        tar_gradient_x[r, c] = np.float32(0.0)
+                        tar_gradient_y[r, c] = np.float32(0.0)
                     else:
                         # 插值计算（简化版，实际应使用Bicubic插值）
                         x_int = int(global_x)
                         y_int = int(global_y)
-                        x_frac = global_x - x_int
-                        y_frac = global_y - y_int
+                        x_frac = np.float32(global_x - x_int)
+                        y_frac = np.float32(global_y - y_int)
                         
                         # 简单的双线性插值用于演示
-                        w00 = (1-x_frac) * (1-y_frac)
-                        w01 = x_frac * (1-y_frac)
-                        w10 = (1-x_frac) * y_frac
-                        w11 = x_frac * y_frac
+                        w00 = np.float32((1-x_frac) * (1-y_frac))
+                        w01 = np.float32(x_frac * (1-y_frac))
+                        w10 = np.float32((1-x_frac) * y_frac)
+                        w11 = np.float32(x_frac * y_frac)
                         
-                        tar_subset[r, c] = (
+                        tar_subset[r, c] = np.float32(
                             tar_img_data[y_int, x_int] * w00 + 
                             tar_img_data[y_int, x_int+1] * w01 + 
                             tar_img_data[y_int+1, x_int] * w10 + 
@@ -330,15 +348,15 @@ def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
                         )
                         
                         # 同样为梯度计算简单插值
-                        tar_gradient_x[r, c] = (tar_img_data[y_int, min(x_int+1, ref_img_width-1)] - 
-                                             tar_img_data[y_int, max(x_int-1, 0)]) / 2.0
-                        tar_gradient_y[r, c] = (tar_img_data[min(y_int+1, ref_img_height-1), x_int] - 
-                                             tar_img_data[max(y_int-1, 0), x_int]) / 2.0
+                        tar_gradient_x[r, c] = np.float32((tar_img_data[y_int, min(x_int+1, ref_img_width-1)] - 
+                                             tar_img_data[y_int, max(x_int-1, 0)]) / 2.0)
+                        tar_gradient_y[r, c] = np.float32((tar_img_data[min(y_int+1, ref_img_height-1), x_int] - 
+                                             tar_img_data[max(y_int-1, 0), x_int]) / 2.0)
             
             # 计算目标子区的零均值归一化
-            tar_mean = np.mean(tar_subset)
+            tar_mean = np.float32(np.mean(tar_subset))
             tar_subset = tar_subset - tar_mean
-            tar_mean_norm = np.sqrt(np.sum(tar_subset * tar_subset))
+            tar_mean_norm = np.float32(np.sqrt(np.sum(tar_subset * tar_subset)))
             
             if tar_mean_norm < 1e-10:
                 break  # 避免除零错误
@@ -349,8 +367,8 @@ def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
             
             for r in range(subset_height):
                 for c in range(subset_width):
-                    x_local = c - subset_radius_x
-                    y_local = r - subset_radius_y
+                    x_local = np.float32(c - subset_radius_x)
+                    y_local = np.float32(r - subset_radius_y)
                     tar_grad_x = tar_gradient_x[r, c]
                     tar_grad_y = tar_gradient_y[r, c]
                     
@@ -375,13 +393,13 @@ def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
             # 对角线设为Hessian对角线的倒数（非常简化的处理）
             for i in range(6):
                 if abs(hessian[i, i]) > 1e-10:
-                    inv_hessian[i, i] = 1.0 / hessian[i, i]
+                    inv_hessian[i, i] = np.float32(1.0 / hessian[i, i])
             
             # 计算误差图像
             error_img = ref_subset * (tar_mean_norm / ref_mean_norm) - tar_subset
             
             # 计算ZNSSD
-            znssd = np.sum(error_img * error_img) / (tar_mean_norm * tar_mean_norm)
+            znssd = np.float32(np.sum(error_img * error_img) / (tar_mean_norm * tar_mean_norm))
             
             # 计算参数增量的分子部分
             numerator = np.zeros(6, dtype=np.float32)
@@ -397,58 +415,61 @@ def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
                     dp[i] += inv_hessian[i, j] * numerator[j]
             
             # 更新当前参数
-            p_current = NumbaDeformation2D1(
-                p_current.u + dp[0],
-                p_current.ux + dp[1],
-                p_current.uy + dp[2],
-                p_current.v + dp[3],
-                p_current.vx + dp[4],
-                p_current.vy + dp[5]
-            )
+            p_current_u = p_current_u + dp[0]
+            p_current_ux = p_current_ux + dp[1]
+            p_current_uy = p_current_uy + dp[2]
+            p_current_v = p_current_v + dp[3]
+            p_current_vx = p_current_vx + dp[4]
+            p_current_vy = p_current_vy + dp[5]
             
             # 检查收敛
-            subset_radius_x2 = subset_radius_x * subset_radius_x
-            subset_radius_y2 = subset_radius_y * subset_radius_y
+            subset_radius_x2 = np.float32(subset_radius_x * subset_radius_x)
+            subset_radius_y2 = np.float32(subset_radius_y * subset_radius_y)
             
-            dp_norm_max = (dp[0] * dp[0] + 
+            dp_norm_max = np.float32(dp[0] * dp[0] + 
                          dp[1] * dp[1] * subset_radius_x2 +
                          dp[2] * dp[2] * subset_radius_y2 +
                          dp[3] * dp[3] +
                          dp[4] * dp[4] * subset_radius_x2 +
                          dp[5] * dp[5] * subset_radius_y2)
             
-            dp_norm_max = math.sqrt(dp_norm_max)
+            dp_norm_max = np.float32(math.sqrt(dp_norm_max))
             
             # 检查是否满足终止条件
             if dp_norm_max < conv_criterion:
                 break
         
-        # 存储最终结果
-        poi_batch[i].deformation.u = p_current.u
-        poi_batch[i].deformation.ux = p_current.ux
-        poi_batch[i].deformation.uy = p_current.uy
-        poi_batch[i].deformation.v = p_current.v
-        poi_batch[i].deformation.vx = p_current.vx
-        poi_batch[i].deformation.vy = p_current.vy
-        
-        # 保存输出参数
-        poi_batch[i].result.u0 = u0
-        poi_batch[i].result.v0 = v0
-        poi_batch[i].result.zncc = 0.5 * (2.0 - znssd)
-        poi_batch[i].result.iteration = float(iteration_counter)
-        poi_batch[i].result.convergence = dp_norm_max
+        # 存储最终结果到数组
+        poi_data_array[i, 2] = p_current_u  # u
+        poi_data_array[i, 3] = p_current_ux  # ux
+        poi_data_array[i, 4] = p_current_uy  # uy
+        poi_data_array[i, 5] = p_current_v  # v
+        poi_data_array[i, 6] = p_current_vx  # vx
+        poi_data_array[i, 7] = p_current_vy  # vy
+        poi_data_array[i, 8] = u0  # u0
+        poi_data_array[i, 9] = v0  # v0
+        poi_data_array[i, 10] = np.float32(0.5 * (2.0 - znssd))  # zncc
+        poi_data_array[i, 11] = float(iteration_counter)  # iteration
+        poi_data_array[i, 12] = dp_norm_max  # convergence
         
         # 检查迭代是否在期望目标处收敛
-        if poi_batch[i].result.convergence >= conv_criterion and iteration_counter >= stop_condition:
-            poi_batch[i].result.zncc = -4.0
+        if poi_data_array[i, 12] >= conv_criterion and iteration_counter >= stop_condition:
+            poi_data_array[i, 10] = np.float32(-4.0)  # zncc
         
         # 检查是否出现NaN
-        if (math.isnan(poi_batch[i].result.zncc) or math.isnan(poi_batch[i].deformation.u) or math.isnan(poi_batch[i].deformation.v)):
-            poi_batch[i].deformation.u = u0
-            poi_batch[i].deformation.v = v0
-            poi_batch[i].result.zncc = -5.0
+        if (math.isnan(poi_data_array[i, 10]) or math.isnan(poi_data_array[i, 2]) or math.isnan(poi_data_array[i, 5])):
+            poi_data_array[i, 2] = u0  # u
+            poi_data_array[i, 5] = v0  # v
+            poi_data_array[i, 10] = np.float32(-5.0)  # zncc
     
-    return poi_batch
+    return poi_data_array
+
+# 保留原始函数供后续参考，但不再使用
+def compute_poi_batch(poi_batch, ref_img_data, ref_img_width, ref_img_height,
+                     tar_img_data, tar_coefficient, tar_coefficient_x, tar_coefficient_y,
+                     subset_radius_x, subset_radius_y, conv_criterion, stop_condition):
+    """已弃用，使用compute_poi_batch_numba替代"""
+    pass
 
 
 class NR2D1:
@@ -499,7 +520,100 @@ class NR2D1:
         
         end_time = time.time()
         print(f"NR2D1 preparation completed in {end_time - start_time:.3f} seconds")
-    
+
+    def compute_poi_queue(self, poi_queue):
+        """并行计算POI队列，使用分批处理来优化性能"""
+        start_time = time.time()
+        queue_length = len(poi_queue)
+        
+        # 检查是否已经准备好
+        if (self.tar_interp is None or self.tar_interp_x is None or 
+            self.tar_interp_y is None or self.ref_img is None or 
+            self.tar_img is None):
+            print("Error: NR2D1 not properly prepared. Call prepare() first.")
+            return
+        
+        # 转换为numba可用的格式
+        ref_img_data = self.ref_img.eg_mat
+        ref_img_width = self.ref_img.width
+        ref_img_height = self.ref_img.height
+        tar_img_data = self.tar_img.eg_mat
+        
+        print(f"Processing {queue_length} POIs in batches of {self.batch_size}...")
+        
+        # 按批次处理POI队列
+        for i in range(0, queue_length, self.batch_size):
+            batch_end = min(i+self.batch_size, queue_length)
+            batch = poi_queue[i:batch_end]
+            batch_size = len(batch)
+            
+            # 将POI对象转换为NumPy数组 - 这是关键修改
+            poi_data_array = np.zeros((batch_size, 13), dtype=np.float32)  # 13列:包含x,y,变形参数和结果
+            
+            # 从POI对象提取数据
+            for j, poi in enumerate(batch):
+                poi_data_array[j, 0] = poi.x
+                poi_data_array[j, 1] = poi.y
+                poi_data_array[j, 2] = poi.deformation.u
+                poi_data_array[j, 3] = poi.deformation.ux
+                poi_data_array[j, 4] = poi.deformation.uy
+                poi_data_array[j, 5] = poi.deformation.v
+                poi_data_array[j, 6] = poi.deformation.vx
+                poi_data_array[j, 7] = poi.deformation.vy
+                poi_data_array[j, 8] = poi.result.u0
+                poi_data_array[j, 9] = poi.result.v0
+                poi_data_array[j, 10] = poi.result.zncc
+                poi_data_array[j, 11] = poi.result.iteration
+                poi_data_array[j, 12] = poi.result.convergence
+            
+            # 使用numba并行加速处理当前批次
+            processed_array = compute_poi_batch_numba(
+                poi_data_array, 
+                ref_img_data, ref_img_width, ref_img_height,
+                tar_img_data, 
+                self.tar_interp.coefficient, 
+                self.tar_interp_x.coefficient, 
+                self.tar_interp_y.coefficient,
+                self.subset_radius_x, self.subset_radius_y, 
+                self.conv_criterion, self.stop_condition
+            )
+            
+            # 将处理后的数组数据写回POI对象
+            for j in range(batch_size):
+                poi = batch[j]
+                poi.deformation.u = processed_array[j, 2]
+                poi.deformation.ux = processed_array[j, 3]
+                poi.deformation.uy = processed_array[j, 4]
+                poi.deformation.v = processed_array[j, 5]
+                poi.deformation.vx = processed_array[j, 6]
+                poi.deformation.vy = processed_array[j, 7]
+                poi.result.u0 = processed_array[j, 8]
+                poi.result.v0 = processed_array[j, 9]
+                poi.result.zncc = processed_array[j, 10]
+                poi.result.iteration = processed_array[j, 11]
+                poi.result.convergence = processed_array[j, 12]
+                
+                # 更新原始队列
+                poi_queue[i+j] = poi
+                
+            if (i+self.batch_size) % (5*self.batch_size) == 0 or batch_end == queue_length:
+                progress = (batch_end / queue_length) * 100
+                print(f"Progress: {progress:.1f}% ({batch_end}/{queue_length} POIs processed)")
+        
+        end_time = time.time()
+        processing_time = end_time - start_time
+        poi_per_second = queue_length / processing_time
+        
+        # 计算有效结果数量
+        valid_count = sum(1 for poi in poi_queue if poi.result.zncc > 0)
+        valid_percentage = (valid_count / queue_length) * 100
+        
+        print(f"POI queue computation completed in {processing_time:.3f} seconds")
+        print(f"Average processing speed: {poi_per_second:.1f} POIs/second")
+        print(f"Valid results: {valid_count} out of {queue_length} ({valid_percentage:.1f}%)")
+        
+        return poi_queue
+
     def compute(self, poi):
         """计算单个POI的变形"""
         subset_width = 2 * self.subset_radius_x + 1
@@ -638,65 +752,8 @@ class NR2D1:
             poi.deformation.u = poi.result.u0
             poi.deformation.v = poi.result.v0
             poi.result.zncc = -5.0
-    
-    def compute_poi_queue(self, poi_queue):
-        """并行计算POI队列，使用分批处理来优化性能"""
-        start_time = time.time()
-        queue_length = len(poi_queue)
         
-        # 检查是否已经准备好
-        if (self.tar_interp is None or self.tar_interp_x is None or 
-            self.tar_interp_y is None or self.ref_img is None or 
-            self.tar_img is None):
-            print("Error: NR2D1 not properly prepared. Call prepare() first.")
-            return
-        
-        # 转换为numba可用的格式
-        ref_img_data = self.ref_img.eg_mat
-        ref_img_width = self.ref_img.width
-        ref_img_height = self.ref_img.height
-        tar_img_data = self.tar_img.eg_mat
-        
-        print(f"Processing {queue_length} POIs in batches of {self.batch_size}...")
-        
-        # 按批次处理POI队列
-        for i in range(0, queue_length, self.batch_size):
-            batch_end = min(i+self.batch_size, queue_length)
-            batch = poi_queue[i:batch_end]
-            
-            # 使用numba并行加速处理当前批次
-            processed_batch = compute_poi_batch(
-                batch, 
-                ref_img_data, ref_img_width, ref_img_height,
-                tar_img_data, 
-                self.tar_interp.coefficient, 
-                self.tar_interp_x.coefficient, 
-                self.tar_interp_y.coefficient,
-                self.subset_radius_x, self.subset_radius_y, 
-                self.conv_criterion, self.stop_condition
-            )
-            
-            # 更新原始队列中的结果
-            for j in range(len(batch)):
-                poi_queue[i+j] = processed_batch[j]
-                
-            if (i+self.batch_size) % (5*self.batch_size) == 0 or batch_end == queue_length:
-                progress = (batch_end / queue_length) * 100
-                print(f"Progress: {progress:.1f}% ({batch_end}/{queue_length} POIs processed)")
-        
-        end_time = time.time()
-        processing_time = end_time - start_time
-        poi_per_second = queue_length / processing_time
-        
-        # 计算有效结果数量
-        valid_count = sum(1 for poi in poi_queue if poi.result.zncc > 0)
-        valid_percentage = (valid_count / queue_length) * 100
-        
-        print(f"POI queue computation completed in {processing_time:.3f} seconds")
-        print(f"Average processing speed: {poi_per_second:.1f} POIs/second")
-        print(f"Valid results: {valid_count} out of {queue_length} ({valid_percentage:.1f}%)")
-        
-        return poi_queue
+        return poi  # 添加返回值
 
 
 # 使用示例

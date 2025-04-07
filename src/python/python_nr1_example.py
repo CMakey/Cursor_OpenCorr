@@ -143,7 +143,7 @@ class PerspectiveInitializer:
 def main():
     # 设置要处理的文件
     ref_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/speckle_medium.tif"  # 替换为您计算机上的路径
-    tar_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/Camera_DEV_1AB22C0222A5_2024-09-23_19-29-40.png"     # 替换为您计算机上的路径
+    tar_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/Camera_DEV_1AB22C0222A5_2025-01-11_10-40-02.png"     # 替换为您计算机上的路径
     
     # 检查文件是否存在
     if not os.path.exists(ref_image_path) or not os.path.exists(tar_image_path):
@@ -172,16 +172,16 @@ def main():
     img_result_path = f"{base_path}_perspective_nr1_r16_results.png"
     
     # 设置DIC参数
-    subset_radius_x = 16
-    subset_radius_y = 16
-    max_iteration = 10
+    subset_radius_x = 32
+    subset_radius_y = 32
+    max_iteration = 100
     max_deformation_norm = 0.001
     
     # 设置POI
     upper_left_point = Point2D(975, 695)
     poi_number_x = 9  # 减少点数以加快示例运行速度
     poi_number_y = 7
-    grid_space = 200
+    grid_space = 300
     
     # 创建POI队列
     poi_queue = []
@@ -210,29 +210,11 @@ def main():
     # ])
     # persp_init.setTransformMatrix(transform_matrix)
     transform_matrix = np.array([
-        [ 8.25327830e-01, -1.92603161e-02,  6.08026082e+02],
-        [ 9.29342396e-03,  8.11131732e-01,  1.28319036e+02], 
-        [ 1.38626335e-06, -5.94219881e-06,  1.00000000e+00]
+        [ 5.58350133e-01, -1.36953786e-02,  3.63650932e+02], 
+        [ 9.52164058e-03,  5.50625148e-01,  5.68499962e+02], 
+        [ 3.29165342e-06, -3.78049399e-06,  1.00000000e+00]
     ])
     persp_init.setTransformMatrix(transform_matrix)
-    
-    # 创建和准备梯度计算实例 - 使用python_gradient模块而不是内置于NR类
-    tar_gradient = Gradient2D4(tar_img.eg_mat)
-    tar_gradient_x = tar_gradient.get_gradient_x()
-    tar_gradient_y = tar_gradient.get_gradient_y()
-    
-    # 创建和准备插值实例 - 使用python_cubic_interpolation模块
-    tar_interp = BicubicBspline(tar_img)
-    tar_interp.prepare()
-    
-    # 创建梯度x和y方向的插值
-    gradient_x_img = Image2D(tar_img.width, tar_img.height, tar_gradient_x)
-    tar_interp_x = BicubicBspline(gradient_x_img)
-    tar_interp_x.prepare()
-    
-    gradient_y_img = Image2D(tar_img.width, tar_img.height, tar_gradient_y)
-    tar_interp_y = BicubicBspline(gradient_y_img)
-    tar_interp_y.prepare()
     
     # 创建NR实例
     nr = NR2D1(subset_radius_x, subset_radius_y, max_deformation_norm, max_iteration, batch_size=16)
@@ -256,13 +238,8 @@ def main():
     
     # NR 计算
     timer_tic = time.time()
-    # 将准备好的梯度和插值数据设置到NR实例中
-    nr.tar_gradient_x = tar_gradient_x
-    nr.tar_gradient_y = tar_gradient_y
-    nr.tar_coefficient = tar_interp.coefficient
-    nr.tar_coefficient_x = tar_interp_x.coefficient
-    nr.tar_coefficient_y = tar_interp_y.coefficient
-    nr.is_prepared = True  # 表示已经准备好了数据，跳过内部prepare()步骤
+    # 使用内置的prepare方法而不是手动计算
+    nr.prepare()
     
     nr.compute_poi_queue(poi_queue)
     timer_toc = time.time()
