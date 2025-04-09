@@ -120,7 +120,7 @@ class VisualizedNR2D1(NR2D1):
             tar_mean_norm = np.sqrt(np.sum(tar_subset.eg_mat * tar_subset.eg_mat))
             
             # 可视化当前迭代的子区匹配
-            if self.visualize and (iteration_counter % self.visualize_interval == 1 or iteration_counter <= 3):
+            if self.visualize:
                 # 放大子区图像
                 scale_factor = 5.0  # 图像放大因子
                 
@@ -188,7 +188,7 @@ class VisualizedNR2D1(NR2D1):
                 
                 # 显示图像
                 cv2.imshow(window_title, display)
-                key = cv2.waitKey(1)
+                key = cv2.waitKey(5)  # 增加等待时间，从1ms到5ms
                 if key == 27:  # ESC键退出整个程序
                     cv2.destroyAllWindows()
                     import sys
@@ -386,11 +386,11 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
             # ------ 替换开始: 使用透视变换构建目标子区 ------
             
             # 从当前变形参数构建临时透视变换矩阵
-            if self.transform_matrix is not None:
-                # 使用全局透视变换矩阵
+            if self.transform_matrix is not None and iteration_counter == 1:
+                # 第一次迭代时使用全局透视变换矩阵作为初始估计
                 transform = self.transform_matrix.copy()
             else:
-                # 从当前变形参数创建局部仿射变换矩阵
+                # 使用当前变形参数创建局部仿射变换矩阵
                 transform = np.array([
                     [1.0 + p_current.ux, p_current.uy, p_current.u],
                     [p_current.vx, 1.0 + p_current.vy, p_current.v],
@@ -430,7 +430,7 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
             tar_mean_norm = np.sqrt(np.sum(tar_subset.eg_mat * tar_subset.eg_mat))
             
             # 可视化当前迭代的子区匹配 (保持原有代码)
-            if self.visualize and (iteration_counter % self.visualize_interval == 1 or iteration_counter <= 3):
+            if self.visualize:
                 # 放大子区图像
                 scale_factor = 5.0  # 图像放大因子
                 
@@ -498,7 +498,7 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
                 
                 # 显示图像
                 cv2.imshow(window_title, display)
-                key = cv2.waitKey(1)
+                key = cv2.waitKey(5)  # 增加等待时间，从1ms到5ms
                 if key == 27:  # ESC键退出整个程序
                     cv2.destroyAllWindows()
                     import sys
@@ -577,7 +577,20 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
             
             # 检查是否满足终止条件
             if iteration_counter >= self.stop_condition or dp_norm_max < self.conv_criterion:
+                # 如果已收敛，再次显示最终结果
+                if self.visualize:
+                    # 添加收敛信息
+                    cv2.rectangle(display, (0, display.shape[0]-60), (display.shape[1], display.shape[0]), (0, 0, 0), -1)
+                    cv2.putText(display, "CONVERGED - Press any key to continue", 
+                                (display.shape[1]//2 - 250, display.shape[0]-30), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    cv2.imshow(window_title, display)
+                    cv2.waitKey(0)  # 等待用户按键继续
                 break
+        
+        # 关闭可视化窗口
+        if self.visualize:
+            cv2.destroyWindow(window_title)
         
         # 存储最终结果
         poi.deformation.u = p_current.u
