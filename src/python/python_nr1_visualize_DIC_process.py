@@ -79,7 +79,11 @@ class VisualizedNR2D1(NR2D1):
         # Newton-Raphson迭代
         dp_norm_max = 0.0
         znssd = 0.0
-
+        
+        # 初始化Hessian矩阵状态变量
+        hessian_cond = 0.0
+        is_ill_conditioned = False
+        
         # 准备可视化窗口
         if self.visualize:
             window_title = f"Subset Matching - POI #{self.poi_index+1}/{self.total_pois} at ({poi.x:.1f}, {poi.y:.1f})"
@@ -182,6 +186,13 @@ class VisualizedNR2D1(NR2D1):
                 cv2.putText(display, f"u: {p_current.u:.2f}, v: {p_current.v:.2f}", 
                             (info_x, info_y_start + line_spacing*4), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
                 
+                # 添加Hessian矩阵状态信息
+                matrix_color = (0, 0, 255) if is_ill_conditioned else (0, 255, 0)  # 病态为红色，良好为绿色
+                cv2.putText(display, f"Hessian Cond: {hessian_cond:.1e}", 
+                            (info_x, info_y_start + line_spacing*5), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
+                cv2.putText(display, f"Matrix Status: {'ILL-CONDITIONED' if is_ill_conditioned else 'WELL-CONDITIONED'}", 
+                            (info_x, info_y_start + line_spacing*6), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
+                
                 # 命令提示
                 cv2.putText(display, "Press 'c' to skip to next POI, ESC to exit", 
                            (text_offset_x, display.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, font_size, (0, 255, 255), font_thickness)
@@ -221,7 +232,20 @@ class VisualizedNR2D1(NR2D1):
                             hessian[i, j] += sd_img[r, c, i] * sd_img[r, c, j]
             
             # 计算黑塞矩阵的逆
-            inv_hessian = np.linalg.inv(hessian)
+            try:
+                # 计算黑塞矩阵的条件数
+                hessian_cond = np.linalg.cond(hessian)
+                # 判断黑塞矩阵是否接近奇异
+                is_ill_conditioned = hessian_cond > 1e5  # 条件数大于10^5通常认为是病态的
+                
+                inv_hessian = np.linalg.inv(hessian)
+            except np.linalg.LinAlgError:
+                # 矩阵求逆失败，标记为奇异
+                hessian_cond = float('inf')
+                is_ill_conditioned = True
+                # 添加正则化项
+                hessian_reg = hessian + np.eye(6) * 1e-3
+                inv_hessian = np.linalg.inv(hessian_reg)
             
             # 计算误差图像
             error_img = ref_subset.eg_mat * (tar_mean_norm / ref_mean_norm) - tar_subset.eg_mat
@@ -371,6 +395,10 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
         dp_norm_max = 0.0
         znssd = 0.0
         
+        # 初始化Hessian矩阵状态变量
+        hessian_cond = 0.0
+        is_ill_conditioned = False
+        
         # 准备可视化窗口 (保持原有代码)
         if self.visualize:
             window_title = f"Subset Matching - POI #{self.poi_index+1}/{self.total_pois} at ({poi.x:.1f}, {poi.y:.1f})"
@@ -492,6 +520,13 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
                 cv2.putText(display, f"u: {p_current.u:.2f}, v: {p_current.v:.2f}", 
                             (info_x, info_y_start + line_spacing*4), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
                 
+                # 添加Hessian矩阵状态信息
+                matrix_color = (0, 0, 255) if is_ill_conditioned else (0, 255, 0)  # 病态为红色，良好为绿色
+                cv2.putText(display, f"Hessian Cond: {hessian_cond:.1e}", 
+                            (info_x, info_y_start + line_spacing*5), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
+                cv2.putText(display, f"Matrix Status: {'ILL-CONDITIONED' if is_ill_conditioned else 'WELL-CONDITIONED'}", 
+                            (info_x, info_y_start + line_spacing*6), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
+                
                 # 命令提示
                 cv2.putText(display, "Press 'c' to skip to next POI, ESC to exit", 
                            (text_offset_x, display.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, font_size, (0, 255, 255), font_thickness)
@@ -531,7 +566,20 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
                             hessian[i, j] += sd_img[r, c, i] * sd_img[r, c, j]
             
             # 计算黑塞矩阵的逆
-            inv_hessian = np.linalg.inv(hessian)
+            try:
+                # 计算黑塞矩阵的条件数
+                hessian_cond = np.linalg.cond(hessian)
+                # 判断黑塞矩阵是否接近奇异
+                is_ill_conditioned = hessian_cond > 1e5  # 条件数大于10^5通常认为是病态的
+                
+                inv_hessian = np.linalg.inv(hessian)
+            except np.linalg.LinAlgError:
+                # 矩阵求逆失败，标记为奇异
+                hessian_cond = float('inf')
+                is_ill_conditioned = True
+                # 添加正则化项
+                hessian_reg = hessian + np.eye(6) * 1e-3
+                inv_hessian = np.linalg.inv(hessian_reg)
             
             # 计算误差图像
             error_img = ref_subset.eg_mat * (tar_mean_norm / ref_mean_norm) - tar_subset.eg_mat
@@ -745,8 +793,9 @@ class PerspectiveInitializer:
 
 def main():
     # 设置要处理的文件
-    ref_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/speckle_medium.tif"  # 替换为您计算机上的路径
-    tar_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/Camera_DEV_1AB22C0222A5_2025-01-11_10-40-02.png"     # 替换为您计算机上的路径
+    # ref_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/speckle_medium.tif"  # 替换为您计算机上的路径
+    ref_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/Camera_DEV_1AB22C0222A5_2025-01-11_10-40-02.png"  # 替换为您计算机上的路径
+    tar_image_path = "/Users/liyongchang/Downloads/OpenCorr-main/src/python/img/Camera_DEV_1AB22C0222A5_2025-01-11_10-40-18.png"     # 替换为您计算机上的路径
     
     # 检查文件是否存在
     if not os.path.exists(ref_image_path) or not os.path.exists(tar_image_path):
@@ -775,16 +824,16 @@ def main():
     img_result_path = f"{base_path}_perspective_nr1_r16_results.png"
     
     # 设置DIC参数
-    subset_radius_x = 50
-    subset_radius_y = 50
-    max_iteration = 100
+    subset_radius_x = 100
+    subset_radius_y = 100
+    max_iteration = 50
     max_deformation_norm = 0.001
     
     # 设置POI
-    upper_left_point = Point2D(975, 695)
+    upper_left_point = Point2D(800, 800)
     poi_number_x = 9  # 减少点数以加快示例运行速度
     poi_number_y = 7
-    grid_space = 300
+    grid_space = 200
     
     # 创建POI队列
     poi_queue = []
@@ -807,9 +856,9 @@ def main():
     # 可选：手动设置透视变换矩阵
     # 这是一个示例矩阵，表示轻微的平移和缩放，实际应用中应替换为实际变换
     transform_matrix = np.array([
-        [ 5.58350133e-01, -1.36953786e-02,  3.63650932e+02], 
-        [ 9.52164058e-03,  5.50625148e-01,  5.68499962e+02], 
-        [ 3.29165342e-06, -3.78049399e-06,  1.00000000e+00]
+        [0.893885, -0.004331, 490.417859],
+        [-0.042513, 0.965303, 57.770297],
+        [-0.000027, -0.000001, 1.000000]
     ])
     persp_init.setTransformMatrix(transform_matrix)
     
