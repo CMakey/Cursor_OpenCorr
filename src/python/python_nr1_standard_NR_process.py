@@ -13,8 +13,9 @@ import matplotlib.pyplot as plt
 import cv2
 import pandas as pd
 from python_cubic_interpolation import BicubicBspline, Point2D, Image2D, load_image
-from python_nr import NR2D1, POI2D, Deformation2D1, Subset2D
+from python_nr import NR2D1, Deformation2D1, Subset2D
 from python_gradient import Gradient2D4
+from python_poi import POI2D, DeformationVector2D, Result2D, Point3D, StrainVector2D
 
 # 为NR2D1类添加一个可视化子区的方法
 class VisualizedNR2D1(NR2D1):
@@ -44,10 +45,10 @@ class VisualizedNR2D1(NR2D1):
             poi.x + self.subset_radius_x > self.ref_img.width - 1 or
             abs(poi.deformation.u) >= self.ref_img.width or 
             abs(poi.deformation.v) >= self.ref_img.height or
-            poi.result.zncc < 0 or np.isnan(poi.deformation.u) or 
+            poi.result.znssd < 0 or np.isnan(poi.deformation.u) or 
             np.isnan(poi.deformation.v)):
             
-            poi.result.zncc = poi.result.zncc if poi.result.zncc < -1 else -1
+            poi.result.znssd = poi.result.znssd if poi.result.znssd < -1 else -1
             return
         
         # 创建参考子区
@@ -123,6 +124,21 @@ class VisualizedNR2D1(NR2D1):
             tar_subset.eg_mat = tar_subset.eg_mat - tar_mean
             tar_mean_norm = np.sqrt(np.sum(tar_subset.eg_mat * tar_subset.eg_mat))
             
+            # 计算标准ZNSSD（使用标准定义）
+            # 将原始子区归一化用于标准ZNSSD计算
+            ref_subset_std = ref_subset_visual.copy() - np.mean(ref_subset_visual)
+            ref_std_norm = np.sqrt(np.sum(ref_subset_std * ref_subset_std))
+            ref_subset_std = ref_subset_std / ref_std_norm if ref_std_norm > 0 else ref_subset_std
+            
+            tar_subset_std = tar_subset_visual.copy() - np.mean(tar_subset_visual)
+            tar_std_norm = np.sqrt(np.sum(tar_subset_std * tar_subset_std))
+            tar_subset_std = tar_subset_std / tar_std_norm if tar_std_norm > 0 else tar_subset_std
+            
+            # 计算标准ZNSSD
+            std_error = ref_subset_std - tar_subset_std
+            znssd_std = np.sum(std_error * std_error)
+            zncc_std = 0.5 * (2 - znssd_std)
+            
             # 可视化当前迭代的子区匹配
             if self.visualize:
                 # 放大子区图像
@@ -181,17 +197,22 @@ class VisualizedNR2D1(NR2D1):
                             (info_x, info_y_start + line_spacing), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
                 cv2.putText(display, f"Iteration: {iteration_counter}", 
                             (info_x, info_y_start + line_spacing*2), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
-                cv2.putText(display, f"ZNCC: {0.5 * (2 - znssd):.4f}", 
+                
+                # 添加原始ZNSSD/ZNCC和标准ZNSSD/ZNCC的比较
+                cv2.putText(display, f"ZNSSD (Impl): {znssd:.4f}", 
                             (info_x, info_y_start + line_spacing*3), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
-                cv2.putText(display, f"u: {p_current.u:.2f}, v: {p_current.v:.2f}", 
+                cv2.putText(display, f"ZNSSD (Std): {znssd_std:.4f}", 
                             (info_x, info_y_start + line_spacing*4), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
+                
+                cv2.putText(display, f"u: {p_current.u:.2f}, v: {p_current.v:.2f}", 
+                            (info_x, info_y_start + line_spacing*5), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
                 
                 # 添加Hessian矩阵状态信息
                 matrix_color = (0, 0, 255) if is_ill_conditioned else (0, 255, 0)  # 病态为红色，良好为绿色
                 cv2.putText(display, f"Hessian Cond: {hessian_cond:.1e}", 
-                            (info_x, info_y_start + line_spacing*5), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
-                cv2.putText(display, f"Matrix Status: {'ILL-CONDITIONED' if is_ill_conditioned else 'WELL-CONDITIONED'}", 
                             (info_x, info_y_start + line_spacing*6), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
+                cv2.putText(display, f"Matrix Status: {'ILL-CONDITIONED' if is_ill_conditioned else 'WELL-CONDITIONED'}", 
+                            (info_x, info_y_start + line_spacing*7), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
                 
                 # 命令提示
                 cv2.putText(display, "Press 'c' to skip to next POI, ESC to exit", 
@@ -250,7 +271,7 @@ class VisualizedNR2D1(NR2D1):
             # 计算误差图像
             error_img = ref_subset.eg_mat * (tar_mean_norm / ref_mean_norm) - tar_subset.eg_mat
             
-            # 计算ZNSSD
+            # 计算ZNSSD (实现方法)
             znssd = np.sum(error_img * error_img) / (tar_mean_norm * tar_mean_norm)
             
             # 计算参数增量的分子部分
@@ -317,19 +338,20 @@ class VisualizedNR2D1(NR2D1):
         # 保存输出参数
         poi.result.u0 = p_initial.u
         poi.result.v0 = p_initial.v
-        poi.result.zncc = 0.5 * (2 - znssd)
+        poi.result.znssd = znssd  # 直接保存ZNSSD而不是ZNCC
+        poi.result.std_znssd = znssd_std  # 保存标准方法计算的ZNSSD
         poi.result.iteration = float(iteration_counter)
         poi.result.convergence = dp_norm_max
         
         # 检查迭代是否在期望目标处收敛
         if poi.result.convergence >= self.conv_criterion and poi.result.iteration >= self.stop_condition:
-            poi.result.zncc = -4.0
+            poi.result.znssd = float('inf')  # 使用无穷大表示失败
         
         # 检查是否出现NaN
-        if (np.isnan(poi.result.zncc) or np.isnan(poi.deformation.u) or np.isnan(poi.deformation.v)):
+        if (np.isnan(poi.result.znssd) or np.isnan(poi.deformation.u) or np.isnan(poi.deformation.v)):
             poi.deformation.u = poi.result.u0
             poi.deformation.v = poi.result.v0
-            poi.result.zncc = -5.0
+            poi.result.znssd = float('inf')  # 使用无穷大表示失败
         
         return poi
 
@@ -355,7 +377,7 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
         subset_width = 2 * self.subset_radius_x + 1
         subset_height = 2 * self.subset_radius_y + 1
         
-        # 检查POI是否有效 (保持原有代码)
+        # 检查POI是否有效 (更新为使用python_poi模块的属性)
         if (poi.y - self.subset_radius_y < 0 or poi.x - self.subset_radius_x < 0 or
             poi.y + self.subset_radius_y > self.ref_img.height - 1 or 
             poi.x + self.subset_radius_x > self.ref_img.width - 1 or
@@ -364,10 +386,14 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
             poi.result.zncc < 0 or np.isnan(poi.deformation.u) or 
             np.isnan(poi.deformation.v)):
             
-            poi.result.zncc = poi.result.zncc if poi.result.zncc < -1 else -1
+            # 更新ZNSSD
+            if hasattr(poi.result, 'znssd'):
+                poi.result.znssd = poi.result.znssd if poi.result.znssd < -1 else -1
+            else:
+                poi.result.zncc = -1  # 如果没有znssd属性，设置zncc为负值表示无效
             return
         
-        # 创建参考子区 (保持原有代码)
+        # 创建参考子区
         ref_subset = Subset2D(Point2D(poi.x, poi.y), self.subset_radius_x, self.subset_radius_y)
         ref_subset.fill(self.ref_img)
         ref_mean = np.mean(ref_subset.eg_mat)
@@ -377,13 +403,13 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
         # 创建目标子区
         tar_subset = Subset2D(Point2D(poi.x, poi.y), self.subset_radius_x, self.subset_radius_y)
         
-        # 获取初始变形参数 (保持原有代码)
+        # 获取初始变形参数 (保持原有代码，但修改为使用python_poi模块的类)
         p_initial = Deformation2D1(
             poi.deformation.u, poi.deformation.ux, poi.deformation.uy,
             poi.deformation.v, poi.deformation.vx, poi.deformation.vy
         )
         
-        # 初始化迭代 (保持原有代码)
+        # 初始化迭代
         iteration_counter = 0
         p_current = Deformation2D1()
         p_current.setDeformation(p_initial)
@@ -399,7 +425,7 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
         hessian_cond = 0.0
         is_ill_conditioned = False
         
-        # 准备可视化窗口 (保持原有代码)
+        # 准备可视化窗口
         if self.visualize:
             window_title = f"Subset Matching - POI #{self.poi_index+1}/{self.total_pois} at ({poi.x:.1f}, {poi.y:.1f})"
             cv2.namedWindow(window_title, cv2.WINDOW_NORMAL)
@@ -457,7 +483,22 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
             tar_subset.eg_mat = tar_subset.eg_mat - tar_mean
             tar_mean_norm = np.sqrt(np.sum(tar_subset.eg_mat * tar_subset.eg_mat))
             
-            # 可视化当前迭代的子区匹配 (保持原有代码)
+            # 计算标准ZNSSD（使用标准定义）
+            # 将原始子区归一化用于标准ZNSSD计算
+            ref_subset_std = ref_subset_visual.copy() - np.mean(ref_subset_visual)
+            ref_std_norm = np.sqrt(np.sum(ref_subset_std * ref_subset_std))
+            ref_subset_std = ref_subset_std / ref_std_norm if ref_std_norm > 0 else ref_subset_std
+            
+            tar_subset_std = tar_subset_visual.copy() - np.mean(tar_subset_visual)
+            tar_std_norm = np.sqrt(np.sum(tar_subset_std * tar_subset_std))
+            tar_subset_std = tar_subset_std / tar_std_norm if tar_std_norm > 0 else tar_subset_std
+            
+            # 计算标准ZNSSD
+            std_error = ref_subset_std - tar_subset_std
+            znssd_std = np.sum(std_error * std_error)
+            zncc_std = 0.5 * (2 - znssd_std)
+            
+            # 可视化当前迭代的子区匹配
             if self.visualize:
                 # 放大子区图像
                 scale_factor = 5.0  # 图像放大因子
@@ -515,17 +556,22 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
                             (info_x, info_y_start + line_spacing), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
                 cv2.putText(display, f"Iteration: {iteration_counter}", 
                             (info_x, info_y_start + line_spacing*2), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
-                cv2.putText(display, f"ZNCC: {0.5 * (2 - znssd):.4f}", 
+                
+                # 添加原始ZNSSD/ZNCC和标准ZNSSD/ZNCC的比较
+                cv2.putText(display, f"ZNSSD (Impl): {znssd:.4f}", 
                             (info_x, info_y_start + line_spacing*3), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
-                cv2.putText(display, f"u: {p_current.u:.2f}, v: {p_current.v:.2f}", 
+                cv2.putText(display, f"ZNSSD (Std): {znssd_std:.4f}", 
                             (info_x, info_y_start + line_spacing*4), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
+                
+                cv2.putText(display, f"u: {p_current.u:.2f}, v: {p_current.v:.2f}", 
+                            (info_x, info_y_start + line_spacing*5), cv2.FONT_HERSHEY_SIMPLEX, font_size, text_color, font_thickness)
                 
                 # 添加Hessian矩阵状态信息
                 matrix_color = (0, 0, 255) if is_ill_conditioned else (0, 255, 0)  # 病态为红色，良好为绿色
                 cv2.putText(display, f"Hessian Cond: {hessian_cond:.1e}", 
-                            (info_x, info_y_start + line_spacing*5), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
-                cv2.putText(display, f"Matrix Status: {'ILL-CONDITIONED' if is_ill_conditioned else 'WELL-CONDITIONED'}", 
                             (info_x, info_y_start + line_spacing*6), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
+                cv2.putText(display, f"Matrix Status: {'ILL-CONDITIONED' if is_ill_conditioned else 'WELL-CONDITIONED'}", 
+                            (info_x, info_y_start + line_spacing*7), cv2.FONT_HERSHEY_SIMPLEX, font_size, matrix_color, font_thickness)
                 
                 # 命令提示
                 cv2.putText(display, "Press 'c' to skip to next POI, ESC to exit", 
@@ -651,19 +697,20 @@ class VisualizedNR2D1WithPerspective(VisualizedNR2D1):
         # 保存输出参数
         poi.result.u0 = p_initial.u
         poi.result.v0 = p_initial.v
-        poi.result.zncc = 0.5 * (2 - znssd)
+        poi.result.znssd = znssd  # 直接保存ZNSSD而不是ZNCC
+        poi.result.std_znssd = znssd_std  # 保存标准方法计算的ZNSSD
         poi.result.iteration = float(iteration_counter)
         poi.result.convergence = dp_norm_max
         
         # 检查迭代是否在期望目标处收敛
         if poi.result.convergence >= self.conv_criterion and poi.result.iteration >= self.stop_condition:
-            poi.result.zncc = -4.0
+            poi.result.znssd = float('inf')  # 使用无穷大表示失败
         
         # 检查是否出现NaN
-        if (np.isnan(poi.result.zncc) or np.isnan(poi.deformation.u) or np.isnan(poi.deformation.v)):
+        if (np.isnan(poi.result.znssd) or np.isnan(poi.deformation.u) or np.isnan(poi.deformation.v)):
             poi.deformation.u = poi.result.u0
             poi.deformation.v = poi.result.v0
-            poi.result.zncc = -5.0
+            poi.result.znssd = float('inf')  # 使用无穷大表示失败
         
         return poi
 
@@ -756,7 +803,7 @@ class PerspectiveInitializer:
         # 首先对H进行归一化，使得H[2,2] = 1
         W = H / H[2, 2]
         
-        # 创建插值器以计算ZNCC
+        # 创建插值器以计算ZNSSD
         tar_interp = BicubicBspline(self.tar_img)
         tar_interp.prepare()
         
@@ -789,9 +836,9 @@ class PerspectiveInitializer:
             poi.deformation.vx = float(vx)
             poi.deformation.vy = float(vy)
             
-            # 计算初始变形的实际ZNCC值
+            # 计算初始变形的实际ZNSSD值
             # 创建参考子区
-            subset_radius_x = 16  # 使用默认子区大小计算ZNCC
+            subset_radius_x = 16  # 使用默认子区大小计算ZNSSD
             subset_radius_y = 16
             ref_subset = Subset2D(Point2D(poi.x, poi.y), subset_radius_x, subset_radius_y)
             ref_subset.fill(self.ref_img)
@@ -840,11 +887,16 @@ class PerspectiveInitializer:
             # 计算ZNSSD
             znssd = np.sum(error_img * error_img) / (tar_mean_norm * tar_mean_norm)
             
-            # 计算ZNCC
-            zncc = 0.5 * (2 - znssd)
+            # 存储ZNSSD和初始猜测值
+            if hasattr(poi.result, 'znssd'):
+                poi.result.znssd = float(znssd)
+                # 如果同时有zncc属性，也更新
+                if hasattr(poi.result, 'zncc'):
+                    poi.result.zncc = 0.5 * (2.0 - znssd)
+            else:
+                # 如果没有znssd属性，只更新zncc
+                poi.result.zncc = 0.5 * (2.0 - znssd)
             
-            # 存储ZNCC和初始猜测值
-            poi.result.zncc = float(zncc)
             poi.result.u0 = float(u)
             poi.result.v0 = float(v)
         
@@ -901,7 +953,11 @@ def main():
         for j in range(poi_number_x):
             x = upper_left_point.x + j * grid_space
             y = upper_left_point.y + i * grid_space
+            # 使用新的POI类
             poi = POI2D(x, y)
+            # 设置子区半径
+            poi.subset_radius.x = subset_radius_x
+            poi.subset_radius.y = subset_radius_y
             poi_queue.append(poi)
     
     # 创建算法实例
@@ -986,7 +1042,7 @@ def main():
                 'uy': poi.deformation.uy,
                 'vx': poi.deformation.vx,
                 'vy': poi.deformation.vy,  # 添加变形梯度参数
-                'zncc': poi.result.zncc,
+                'znssd': poi.result.znssd,  # 修改为ZNSSD
                 'iterations': poi.result.iteration,
                 'convergence': poi.result.convergence
             })
@@ -1027,7 +1083,7 @@ def main():
         
         # 绘制位移场
         plt.subplot(2, 3, 3)
-        valid_pois = [poi for poi in poi_queue if poi.result.zncc > 0]
+        valid_pois = [poi for poi in poi_queue if poi.result.znssd < float('inf')]
         x = [poi.x for poi in valid_pois]
         y = [poi.y for poi in valid_pois]
         u = [poi.deformation.u for poi in valid_pois]
@@ -1038,12 +1094,12 @@ def main():
         plt.title("Displacement Field")
         plt.axis('off')
         
-        # 绘制ZNCC分布
+        # 绘制ZNSSD分布
         plt.subplot(2, 3, 4)
-        zncc_values = [poi.result.zncc for poi in valid_pois]
-        plt.scatter(x, y, c=zncc_values, cmap='jet', s=10)
-        plt.colorbar(label='ZNCC')
-        plt.title("ZNCC Distribution")
+        znssd_values = [poi.result.znssd for poi in valid_pois]
+        plt.scatter(x, y, c=znssd_values, cmap='jet', s=10)
+        plt.colorbar(label='ZNSSD')
+        plt.title("ZNSSD Distribution")
         plt.axis('off')
         
         # 绘制x方向变形梯度
